@@ -6,8 +6,12 @@
 
 #include "forwards.hpp"
 #include <actor-zeta/scheduler/forwards.hpp>
-#include "actor-zeta/detail/intrusive_ptr.hpp"
-#include "actor-zeta/detail/ref_counted.hpp"
+#include <actor-zeta/detail/intrusive_ptr.hpp>
+#include <actor-zeta/detail/ref_counted.hpp>
+#include <actor-zeta/mailbox/message.hpp>
+#include <actor-zeta/detail/callable_trait.hpp>
+#include <actor-zeta/detail/memory_resource.hpp>
+#include <actor-zeta/detail/memory.hpp>
 
 namespace actor_zeta { namespace base {
     ///
@@ -17,15 +21,30 @@ namespace actor_zeta { namespace base {
     class actor_abstract : public ref_counted {
     public:
         // allow placement new (only)
-        void* operator new(std::size_t, void* ptr) {
+        void* operator new(size_t size, void* ptr) noexcept {
             return ptr;
         }
+
+        /*void operator delete(void* ptr, void*) noexcept {
+
+        }
+        */
+        // prohibit copies, assignments, and heap allocations
+        /*
+        void* operator new(size_t) = delete;
+        void* operator new[](size_t) = delete;
+        void operator delete(void*) = delete;
+        void operator delete[](void*) = delete;
+         */
+
+        explicit actor_abstract(pmr::memory_resource*);
+        virtual ~actor_abstract();
 
         auto address() noexcept -> address_t;
 
         class id_t final {
         public:
-            id_t() = default;
+            id_t() = delete;
 
             explicit id_t(actor_abstract* impl) noexcept
                 : impl_{impl} {
@@ -78,25 +97,19 @@ namespace actor_zeta { namespace base {
 
         auto type() const noexcept -> const char*;
         auto id() const -> id_t;
-        auto enqueue(mailbox::message_ptr) -> void;
-        void enqueue(mailbox::message_ptr, scheduler::execution_unit*);
+        void enqueue(mailbox::message_ptr);
+        actor_zeta::pmr::memory_resource* resource() const noexcept;
 
     protected:
-        // prohibit copies, assignments, and heap allocations
-        void* operator new(size_t);
-        void* operator new[](size_t);
-        actor_abstract() = default;///delete;
+        actor_abstract() = delete;
         actor_abstract(const actor_abstract&) = delete;
         actor_abstract& operator=(const actor_abstract&) = delete;
-        ~actor_abstract() override;
 
-        virtual void enqueue_impl(mailbox::message_ptr, scheduler::execution_unit*) = 0;
+        virtual void enqueue_impl(mailbox::message_ptr) = 0;
         virtual auto type_impl()  const noexcept -> const char* = 0;
-
     private:
+        actor_zeta::pmr::memory_resource * resource_;
 
     };
-
-    using actor_t = intrusive_ptr<actor_abstract>;
 
 }} // namespace actor_zeta::base

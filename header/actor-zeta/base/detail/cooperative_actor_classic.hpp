@@ -5,20 +5,20 @@
 #include <actor-zeta/base/actor_abstract.hpp>
 #include <actor-zeta/base/behavior.hpp>
 #include <actor-zeta/base/forwards.hpp>
-#include <actor-zeta/scheduler/resumable.hpp>
 #include <actor-zeta/detail/type_traits.hpp>
+#include <actor-zeta/scheduler/resumable.hpp>
+#include <actor-zeta/detail/memory.hpp>
 
 namespace actor_zeta { namespace base {
 
     template<class Actor, class Traits>
     class cooperative_actor<Actor, Traits, actor_type::classic>
         : public actor_abstract
-        , private scheduler::resumable {
+        , public scheduler::resumable {
     public:
-        scheduler::resume_result resume(scheduler::execution_unit* e, size_t max_throughput) final {
-            if (!activate(e)) {
-                return scheduler::resume_result::done;
-            }
+        using uptr = std::unique_ptr<cooperative_actor<Actor, Traits, actor_type::classic>,actor_zeta::pmr::deleter_t>;
+
+        scheduler::resume_result resume(size_t max_throughput) final {
             static constexpr size_t quantum = 3;
             size_t handled_msgs = 0;
             mailbox::message_ptr ptr;
@@ -45,7 +45,7 @@ namespace actor_zeta { namespace base {
             return scheduler::resume_result::resume;
         }
 
-        ~cooperative_actor() override {}
+        ~cooperative_actor() override = default;
 
         void intrusive_ptr_add_ref_impl() final {
             ref();
@@ -55,13 +55,15 @@ namespace actor_zeta { namespace base {
             deref();
         }
 
+        template<class Target>
+        static Target* check_ptr(Target* ptr) {
+            assert(ptr);
+            return ptr;
+        }
+
     protected:
-        template<
-            class Supervisor,
-            class = type_traits::enable_if_t<std::is_base_of<supervisor_abstract, Supervisor>::value>>// todo: check Supervisoar is a pointer
-        cooperative_actor(Supervisor* ptr)
-            : actor_abstract()
-            , supervisor_([](supervisor_abstract*ptr) { assert(ptr);return ptr; }(static_cast<supervisor_abstract*>(ptr)))
+        cooperative_actor(pmr::memory_resource* in_resource)
+            : actor_abstract(check_ptr(in_resource))
             , stack_(resource())
             , inbox_(mailbox::priority_message(),
                      high_priority_queue(mailbox::high_priority_message()),
@@ -70,30 +72,20 @@ namespace actor_zeta { namespace base {
         }
 
         auto type_impl() const noexcept -> const char* final {
-            auto const *ptr = static_cast<const Actor*>(this);
+            auto const* ptr = static_cast<const Actor*>(this);
             return ptr->make_type();
         }
 
         template<class T>
         typename Traits::template allocator_type<T> allocator() const noexcept {
-            return Traits::template allocator_type<T>(supervisor().resource());
+            return Traits::template allocator_type<T>(resource());
         }
 
-        pmr::memory_resource* resource() const noexcept {
-            return supervisor()->resource();
-        }
-
-        void enqueue_impl(mailbox::message_ptr msg, scheduler::execution_unit* e) final {
+        void enqueue_impl(mailbox::message_ptr msg) final {
             assert(msg);
             switch (inbox().push_back(std::move(msg))) {
                 case detail::enqueue_result::unblocked_reader: {
                     intrusive_ptr_add_ref(this);
-                    if (e != nullptr) {
-                        context(e);
-                        context()->execute_later(this);
-                    } else {
-                        supervisor()->scheduler()->enqueue(this);
-                    }
                     break;
                 }
                 case detail::enqueue_result::success:
@@ -162,14 +154,6 @@ namespace actor_zeta { namespace base {
             return inbox_;
         }
 
-        bool activate(scheduler::execution_unit* ctx) {
-            assert(ctx != nullptr);
-            if (ctx) {
-                context(ctx);
-            }
-            return true;
-        }
-
         auto reactivate(mailbox::message& x) -> void {
             current_message_ = &x;
             if (stack_.empty()) {
@@ -179,30 +163,10 @@ namespace actor_zeta { namespace base {
             }
 
             auto& behavior = stack_.back();
-            invoke(behavior,self(), current_message_);
+            invoke(behavior, self(), current_message_);
         }
 
-        auto context(scheduler::execution_unit* e) -> void {
-            if (e != nullptr) {
-                executor_ = e;
-            }
-        }
-
-        auto context() const noexcept -> scheduler::execution_unit* {
-            return executor_;
-        }
-
-        auto supervisor() noexcept -> supervisor_abstract* {
-            return supervisor_;
-        }
-
-        auto supervisor() const noexcept -> const supervisor_abstract* {
-            return supervisor_;
-        }
-
-        supervisor_abstract* supervisor_;
         detail::hfsm stack_;
-        scheduler::execution_unit* executor_;
         mailbox::message* current_message_;
         typename Traits::inbox_t inbox_;
     };
